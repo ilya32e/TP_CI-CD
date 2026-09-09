@@ -225,6 +225,21 @@ jobs:
               docker pull "${IMAGE_COMPLETE}:${TAG}"
             fi
 
+            # Le port est-il tenu par le conteneur d'un autre etudiant ?
+            # Ce controle a lieu AVANT de supprimer le notre : sinon, en cas
+            # de conflit, on detruirait notre conteneur en service pour ensuite
+            # echouer a en demarrer un nouveau, et il ne resterait rien.
+            echo "==> Verification que le port ${PORT_HOTE} est disponible"
+            OCCUPANT="$(docker ps --filter "publish=${PORT_HOTE}" --format '{{.Names}}' \
+              | grep -v -x "$CONTENEUR" || true)"
+            if [ -n "$OCCUPANT" ]; then
+              echo "ECHEC : le port ${PORT_HOTE} est deja pris par le conteneur '${OCCUPANT}'," >&2
+              echo "qui appartient a un autre etudiant. Notre conteneur en service" >&2
+              echo "n'a pas ete touche. Choisissez un autre port via PORT_HOTE." >&2
+              exit 1
+            fi
+            echo "    port ${PORT_HOTE} libre"
+
             # --- IDEMPOTENCE ---
             # Le conteneur porte un nom FIXE (myapp-mi). On supprime l'ancien
             # avant de recreer le nouveau : rejouer ce workflow ne peut donc
