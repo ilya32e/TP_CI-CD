@@ -319,7 +319,21 @@ jobs:
       # code, les tests et le deploiement sont corrects.
       - name: Verification via l'IP publique
         continue-on-error: true
-        run: bash scripts/healthcheck.sh "http://${{ secrets.AZURE_VM_HOST }}" 15 4
+        # 5 tentatives et non 15 : le diagnostic ci-dessous a etabli que le NSG
+        # de la VM n'ouvre aucun port HTTP. Inutile d'attendre une minute a
+        # chaque execution pour un echec dont la cause est connue ; 5 essais
+        # suffiront a constater le retour a la normale le jour ou la regle
+        # entrante sera ajoutee.
+        run: |
+          if ! bash scripts/healthcheck.sh "http://${{ secrets.AZURE_VM_HOST }}" 5 3; then
+            echo ""
+            echo "Application injoignable depuis Internet."
+            echo "Le conteneur tourne pourtant sur la VM (voir l'etape de deploiement,"
+            echo "qui a valide /health en local). La cause est le groupe de securite"
+            echo "reseau Azure, qui n'autorise que le port 22 : voir le diagnostic"
+            echo "de l'etape suivante."
+            exit 1
+          fi
 
       - name: Diagnostic - ports joignables depuis Internet
         # Le runner GitHub a un acces reseau direct : son verdict fait autorite
