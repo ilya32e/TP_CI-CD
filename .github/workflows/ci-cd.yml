@@ -235,9 +235,15 @@ jobs:
             # conflit, on detruirait notre conteneur en service pour ensuite
             # echouer a en demarrer un nouveau, et il ne resterait rien.
             echo "==> Verification que le port ${PORT_HOTE} est disponible"
-            set +e
-            OCCUPANT="$(docker ps --filter "publish=${PORT_HOTE}" --format '{{.Names}}' | grep -v -x "$CONTENEUR")"
-            set -e
+            # Volontairement sans "grep" ni pipeline : grep renvoie le code 1
+            # quand il ne trouve aucune ligne, et drone-ssh interrompt alors le
+            # script meme sous "set +e". Une simple boucle ne peut pas echouer.
+            OCCUPANT=""
+            for nom in $(docker ps --filter "publish=${PORT_HOTE}" --format '{{.Names}}'); do
+              if [ "$nom" != "$CONTENEUR" ]; then
+                OCCUPANT="$nom"
+              fi
+            done
             if [ -n "$OCCUPANT" ]; then
               echo "ECHEC : le port ${PORT_HOTE} est deja pris par '${OCCUPANT}'," >&2
               echo "le conteneur d'un autre etudiant. Notre conteneur en service" >&2
