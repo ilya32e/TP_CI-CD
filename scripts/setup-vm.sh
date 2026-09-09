@@ -9,6 +9,10 @@
 
 set -euo pipefail
 
+# $USER n'est pas toujours defini dans un shell SSH non interactif :
+# on determine l'utilisateur courant de facon fiable.
+UTILISATEUR="$(id -un)"
+
 echo "=========================================="
 echo " Preparation de la VM pour le TP CI/CD"
 echo "=========================================="
@@ -34,8 +38,8 @@ fi
 # --- 2. Docker utilisable sans sudo --------------------------------
 # Indispensable : GitHub Actions se connecte en SSH sans mot de passe
 # et ne pourra donc pas repondre a une demande de mot de passe sudo.
-echo "[2/4] Ajout de ${USER} au groupe docker"
-sudo usermod -aG docker "$USER"
+echo "[2/4] Ajout de ${UTILISATEUR} au groupe docker"
+sudo usermod -aG docker "$UTILISATEUR"
 
 # --- 3. Demarrage automatique au boot ------------------------------
 echo "[3/4] Activation du service Docker au demarrage"

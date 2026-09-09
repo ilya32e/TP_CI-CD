@@ -20,6 +20,10 @@ permissions:
 env:
   IMAGE_NAME: tp-cicd-app
   PYTHON_VERSION: "3.12"
+  # La VM Azure est partagee avec toute la promotion : un nom de conteneur
+  # et un port qui nous sont propres evitent tout conflit avec les autres.
+  CONTENEUR: myapp-mi
+  PORT_HOTE: "8090"
 
 jobs:
 
@@ -161,6 +165,8 @@ jobs:
           TAG: ${{ needs.build-et-push.outputs.tag }}
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
           DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+          CONTENEUR: ${{ env.CONTENEUR }}
+          PORT_HOTE: ${{ env.PORT_HOTE }}
         with:
           host: ${{ secrets.AZURE_VM_HOST }}
           username: ${{ secrets.AZURE_VM_USER }}
@@ -170,7 +176,7 @@ jobs:
           port: 22
           # Les valeurs sensibles sont transmises en variables d'environnement
           # plutot qu'ecrites dans le script : elles n'apparaissent pas en clair.
-          envs: IMAGE_COMPLETE,TAG,DOCKERHUB_USERNAME,DOCKERHUB_TOKEN
+          envs: IMAGE_COMPLETE,TAG,DOCKERHUB_USERNAME,DOCKERHUB_TOKEN,CONTENEUR,PORT_HOTE
           script_stop: true
           script: |
             set -euo pipefail
@@ -191,59 +197,86 @@ jobs:
             echo "==> Version de Docker sur la VM"
             docker --version
 
-            echo "==> Connexion a Docker Hub"
-            echo "$DOCKERHUB_TOKEN" | docker login -u "$DOCKERHUB_USERNAME" --password-stdin
+            # ============================================================
+            # ATTENTION : cette VM est MUTUALISEE entre tous les etudiants
+            # de la promotion, sous un unique compte Linux "ubuntu".
+            # Toutes les commandes ci-dessous sont donc volontairement
+            # limitees a NOTRE conteneur et a NOTRE image :
+            #   - aucun "docker image prune", qui supprimerait les images
+            #     des autres etudiants
+            #   - un nom de conteneur unique (myapp-mi) au lieu de "myapp",
+            #     que tout le monde utiliserait sinon
+            #   - un port dedie (8090), pour ne pas voler le port 80
+            #   - aucun "docker login" persistant, qui ecrirait notre jeton
+            #     Docker Hub dans /home/ubuntu/.docker/config.json, lisible
+            #     par toute la classe
+            # ============================================================
 
             echo "==> Recuperation de l'image ${IMAGE_COMPLETE}:${TAG}"
-            docker pull "${IMAGE_COMPLETE}:${TAG}"
+            if ! docker pull "${IMAGE_COMPLETE}:${TAG}"; then
+              # Repli si le depot Docker Hub est prive : on se connecte dans
+              # un repertoire de configuration temporaire, efface juste apres,
+              # pour ne pas laisser le jeton sur la machine partagee.
+              echo "==> Depot prive : connexion temporaire a Docker Hub"
+              DOCKER_CONFIG="$(mktemp -d)"
+              export DOCKER_CONFIG
+              trap 'rm -rf "$DOCKER_CONFIG"' EXIT
+              echo "$DOCKERHUB_TOKEN" | docker login -u "$DOCKERHUB_USERNAME" --password-stdin
+              docker pull "${IMAGE_COMPLETE}:${TAG}"
+            fi
 
             # --- IDEMPOTENCE ---
-            # Le conteneur porte un nom FIXE (myapp). On supprime l'ancien avant
-            # de recreer le nouveau : rejouer ce workflow ne peut donc jamais
-            # empiler plusieurs conteneurs. Le "|| true" evite l'echec au tout
-            # premier deploiement, quand myapp n'existe pas encore.
-            echo "==> Arret de l'ancien conteneur (s'il existe)"
-            docker rm -f myapp || true
+            # Le conteneur porte un nom FIXE (myapp-mi). On supprime l'ancien
+            # avant de recreer le nouveau : rejouer ce workflow ne peut donc
+            # jamais empiler plusieurs conteneurs. Le "|| true" evite l'echec
+            # au tout premier deploiement, quand le conteneur n'existe pas.
+            echo "==> Arret de notre ancien conteneur (s'il existe)"
+            docker rm -f "$CONTENEUR" || true
 
             echo "==> Demarrage du nouveau conteneur"
             # --restart unless-stopped : l'application redemarre toute seule
             # si la VM Azure reboote.
             docker run -d \
-              --name myapp \
+              --name "$CONTENEUR" \
               --restart unless-stopped \
-              -p 80:8080 \
+              -p "${PORT_HOTE}:8080" \
               -e PORT=8080 \
               "${IMAGE_COMPLETE}:${TAG}"
 
             echo "==> Verification locale sur la VM"
             for i in $(seq 1 30); do
-              if curl -fsS --max-time 5 http://localhost/health; then
+              if curl -fsS --max-time 5 "http://localhost:${PORT_HOTE}/health"; then
                 echo ""
                 echo "==> Application demarree apres ${i} tentative(s)"
                 break
               fi
               if [ "$i" -eq 30 ]; then
                 echo "ECHEC : l'application n'a pas demarre" >&2
-                docker logs myapp >&2
+                docker logs "$CONTENEUR" >&2
                 exit 1
               fi
               sleep 2
             done
 
-            echo "==> Etat du conteneur"
-            docker ps --filter name=myapp
+            echo "==> Etat de notre conteneur"
+            docker ps --filter "name=${CONTENEUR}"
 
-            echo "==> Nettoyage des images obsoletes"
-            docker image prune -af --filter "until=168h" || true
-
-            echo "==> Deconnexion de Docker Hub"
-            docker logout || true
+            # Volontairement PAS de "docker image prune" ici : sur une VM
+            # partagee, il effacerait les images des autres etudiants.
+            # On se contente de retirer les anciennes versions de NOTRE image.
+            echo "==> Suppression de nos propres anciennes versions d'image"
+            docker images "${IMAGE_COMPLETE}" --format '{{.Tag}}' \
+              | grep -v -e "^${TAG}$" -e '^latest$' \
+              | while read -r ancien; do
+                  echo "    suppression de ${IMAGE_COMPLETE}:${ancien}"
+                  docker rmi "${IMAGE_COMPLETE}:${ancien}" || true
+                done
 
       # ----------------------------------------------------------------
       # Verification finale depuis l'exterieur (etape 6 de la chaine du TP)
       # ----------------------------------------------------------------
       - name: Verification via l'IP publique
-        run: bash scripts/healthcheck.sh "http://${{ secrets.AZURE_VM_HOST }}" 15 4
+        run: bash scripts/healthcheck.sh "http://${{ secrets.AZURE_VM_HOST }}:${{ env.PORT_HOTE }}" 15 4
 
       - name: Verification que la VM fait tourner le nouveau commit
         # /health renvoie APP_VERSION, injecte au build. Si la version publiee
@@ -251,7 +284,7 @@ jobs:
         # encore : le deploiement est alors declare en echec.
         env:
           ATTENDU: ${{ needs.build-et-push.outputs.tag }}
-          URL_SANTE: http://${{ secrets.AZURE_VM_HOST }}/health
+          URL_SANTE: http://${{ secrets.AZURE_VM_HOST }}:${{ env.PORT_HOTE }}/health
         run: |
           OBTENU=$(curl -fsS "$URL_SANTE" | python -c "import json,sys; print(json.load(sys.stdin)['version'])")
           echo "version attendue : $ATTENDU"
@@ -263,7 +296,7 @@ jobs:
         # contre la VM Azure : la preuve que le service deploye fonctionne
         # vraiment, et pas seulement qu'il repond.
         env:
-          E2E_BASE_URL: http://${{ secrets.AZURE_VM_HOST }}
+          E2E_BASE_URL: http://${{ secrets.AZURE_VM_HOST }}:${{ env.PORT_HOTE }}
         run: pytest tests/e2e -v
 
       - name: Recapitulatif
@@ -279,6 +312,7 @@ jobs:
             echo "|---|---|"
             echo "| Commit | ${{ github.sha }} |"
             echo "| Tag de l image | $TAG |"
-            echo "| Application | http://$HOTE |"
-            echo "| Healthcheck | http://$HOTE/health |"
+            echo "| Conteneur | ${{ env.CONTENEUR }} |"
+            echo "| Application | http://$HOTE:${{ env.PORT_HOTE }} |"
+            echo "| Healthcheck | http://$HOTE:${{ env.PORT_HOTE }}/health |"
           } >> "$GITHUB_STEP_SUMMARY"
