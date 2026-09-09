@@ -21,9 +21,14 @@ env:
   IMAGE_NAME: tp-cicd-app
   PYTHON_VERSION: "3.12"
   # La VM Azure est partagee avec toute la promotion : un nom de conteneur
-  # et un port qui nous sont propres evitent tout conflit avec les autres.
+  # qui nous est propre evite d'ecraser le deploiement d'un camarade.
   CONTENEUR: myapp-mi
-  PORT_HOTE: "8080"
+  # Port 80 : le port HTTP standard, celui qu'un NSG ouvre en priorite pour
+  # une application web. Personne ne l'avait pris dans la promotion, parce
+  # qu'un utilisateur non-root ne peut pas ouvrir un port sous 1024 ; Docker,
+  # lui, tourne en root et le publie sans probleme. Il donne en prime une URL
+  # propre, sans numero de port.
+  PORT_HOTE: "80"
 
 jobs:
 
@@ -308,7 +313,7 @@ jobs:
       # code, les tests et le deploiement sont corrects.
       - name: Verification via l'IP publique
         continue-on-error: true
-        run: bash scripts/healthcheck.sh "http://${{ secrets.AZURE_VM_HOST }}:${{ env.PORT_HOTE }}" 15 4
+        run: bash scripts/healthcheck.sh "http://${{ secrets.AZURE_VM_HOST }}" 15 4
 
       - name: Diagnostic - ports joignables depuis Internet
         # Le runner GitHub a un acces reseau direct : son verdict fait autorite
@@ -323,7 +328,7 @@ jobs:
         continue-on-error: true
         env:
           ATTENDU: ${{ needs.build-et-push.outputs.tag }}
-          URL_SANTE: http://${{ secrets.AZURE_VM_HOST }}:${{ env.PORT_HOTE }}/health
+          URL_SANTE: http://${{ secrets.AZURE_VM_HOST }}/health
         run: |
           OBTENU=$(curl -fsS "$URL_SANTE" | python -c "import json,sys; print(json.load(sys.stdin)['version'])")
           echo "version attendue : $ATTENDU"
@@ -337,7 +342,7 @@ jobs:
         # le NSG publie le port.
         continue-on-error: true
         env:
-          E2E_BASE_URL: http://${{ secrets.AZURE_VM_HOST }}:${{ env.PORT_HOTE }}
+          E2E_BASE_URL: http://${{ secrets.AZURE_VM_HOST }}
         run: pytest tests/e2e -v
 
       - name: Recapitulatif
@@ -354,6 +359,6 @@ jobs:
             echo "| Commit | ${{ github.sha }} |"
             echo "| Tag de l image | $TAG |"
             echo "| Conteneur | ${{ env.CONTENEUR }} |"
-            echo "| Application | http://$HOTE:${{ env.PORT_HOTE }} |"
-            echo "| Healthcheck | http://$HOTE:${{ env.PORT_HOTE }}/health |"
+            echo "| Application | http://$HOTE |"
+            echo "| Healthcheck | http://$HOTE/health |"
           } >> "$GITHUB_STEP_SUMMARY"

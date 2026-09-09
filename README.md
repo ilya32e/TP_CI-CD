@@ -4,8 +4,8 @@ Petite application web en Flask (une liste de tâches) qui se déploie toute seu
 sur une VM Azure à chaque push sur `main`. Une fois le push fait, il n'y a plus
 rien à toucher à la main.
 
-- Application : http://20.56.74.49:8080
-- Healthcheck : http://20.56.74.49:8080/health
+- Application : http://20.56.74.49
+- Healthcheck : http://20.56.74.49/health
 - Image Docker Hub : `ilya32e/tp-cicd-app`
 
 ## L'application
@@ -47,7 +47,7 @@ Sur la VM, le job 4 fait ça :
 ```bash
 docker pull ilya32e/tp-cicd-app:<sha>
 docker rm -f myapp-mi || true
-docker run -d --name myapp-mi --restart unless-stopped -p 8080:8080 ilya32e/tp-cicd-app:<sha>
+docker run -d --name myapp-mi --restart unless-stopped -p 80:8080 ilya32e/tp-cicd-app:<sha>
 ```
 
 Ensuite il vérifie trois choses : que l'appli répond en local sur la VM, qu'elle
