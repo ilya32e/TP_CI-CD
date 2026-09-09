@@ -193,13 +193,20 @@ URL** via la variable `E2E_BASE_URL` : le conteneur local, celui de la CI, ou la
 en production. C'est ce qui permet de rejouer les E2E contre la production après le
 déploiement.
 
-**gunicorn avec 1 worker et 4 threads.** Le Dockerfile utilisait initialement
-`--workers 2`, et **les tests E2E ont révélé un bug que les 30 tests unitaires ne
-pouvaient pas voir** : deux workers gunicorn sont deux processus séparés, donc deux
-`TaskStore` en mémoire distincts. Une tâche créée par le worker A renvoyait un 404
-quand la requête suivante tombait sur le worker B. Corrigé en passant à un seul
-processus multi-threadé — le `Lock` de `TaskStore` rend le stockage sûr entre threads.
-*C'est l'illustration concrète de l'intérêt des tests E2E en plus des tests unitaires.*
+**Serveur intégré de Flask, en un seul processus.** Le conteneur démarre avec
+`python -m app.main`, comme le Dockerfile d'exemple du cours (`MiniProjetDocker`).
+Une version intermédiaire utilisait gunicorn avec `--workers 2`, et **les tests E2E
+ont révélé un bug que les 30 tests unitaires ne pouvaient pas voir** : deux workers
+sont deux processus séparés, donc deux `TaskStore` en mémoire distincts. Une tâche
+créée par le worker A renvoyait un 404 quand la requête suivante tombait sur le
+worker B. *C'est l'illustration concrète de l'intérêt des tests E2E en plus des
+tests unitaires.* La règle qui en découle vaut pour le serveur actuel : le stockage
+étant en mémoire, l'application doit tourner en **un seul processus**. Le serveur
+Flask est multi-threadé, et le `Lock` de `TaskStore` rend le stockage sûr entre
+threads — la configuration est donc correcte.
+
+`python -m app.main` et non `python app/main.py` : le module importe `app.store`,
+ce qui exige que le paquet `app` soit sur le `sys.path`.
 
 **Double tag d'image (`latest` + `<sha-court>`).** Le tag SHA rend chaque image
 traçable jusqu'au commit exact qui l'a produite, et permet de revenir à une version

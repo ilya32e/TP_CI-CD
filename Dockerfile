@@ -37,10 +37,15 @@ EXPOSE 8080
 HEALTHCHECK --interval=10s --timeout=3s --start-period=5s --retries=3 \
     CMD python -c "import urllib.request,os,sys; sys.exit(0) if urllib.request.urlopen(f\"http://127.0.0.1:{os.environ['PORT']}/health\", timeout=2).status == 200 else sys.exit(1)"
 
-# Serveur de production (gunicorn), pas le serveur de developpement Flask.
+# Demarrage par le serveur integre de Flask, comme dans le Dockerfile
+# d'exemple du cours (MiniProjetDocker).
 #
-# UN SEUL processus, mais 4 threads (--threads 4) : les taches sont stockees
-# en memoire, donc plusieurs workers = plusieurs memoires separees et une
-# tache creee par l'un serait invisible pour l'autre. TaskStore est protege
-# par un verrou : il est concu pour etre partage entre threads.
-CMD ["sh", "-c", "gunicorn --bind 0.0.0.0:${PORT} --workers 1 --threads 4 --access-logfile - app.main:app"]
+# "python -m app.main" et non "python app/main.py" : le module importe
+# "app.store", ce qui exige que le paquet "app" soit sur le sys.path.
+#
+# Le serveur Flask est multi-threade mais mono-processus, ce qui convient
+# ici : les taches sont stockees en memoire et TaskStore est protege par un
+# verrou, donc partageable entre threads. Avec plusieurs processus, chacun
+# aurait sa propre memoire et une tache creee par l'un serait invisible
+# pour l'autre.
+CMD ["python", "-m", "app.main"]
