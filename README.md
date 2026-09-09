@@ -4,8 +4,8 @@ Petite application web en Flask (une liste de tâches) qui se déploie toute seu
 sur une VM Azure à chaque push sur `main`. Une fois le push fait, il n'y a plus
 rien à toucher à la main.
 
-- Application : http://20.56.74.49:8090
-- Healthcheck : http://20.56.74.49:8090/health
+- Application : http://20.56.74.49:8080
+- Healthcheck : http://20.56.74.49:8080/health
 - Image Docker Hub : `ilya32e/tp-cicd-app`
 
 ## L'application
@@ -47,7 +47,7 @@ Sur la VM, le job 4 fait ça :
 ```bash
 docker pull ilya32e/tp-cicd-app:<sha>
 docker rm -f myapp-mi || true
-docker run -d --name myapp-mi --restart unless-stopped -p 8090:8080 ilya32e/tp-cicd-app:<sha>
+docker run -d --name myapp-mi --restart unless-stopped -p 8080:8080 ilya32e/tp-cicd-app:<sha>
 ```
 
 Ensuite il vérifie trois choses : que l'appli répond en local sur la VM, qu'elle
@@ -109,8 +109,8 @@ pour moi le meilleur argument en faveur des tests E2E.
 **Un nom de conteneur et un port qui me sont propres.** La VM est partagée avec
 toute la promo, sous un seul compte `ubuntu`. Si j'appelle mon conteneur `myapp`
 comme le suggère le sujet, je casse celui du voisin et il casse le mien — c'est
-arrivé plusieurs fois entre camarades. J'utilise donc `myapp-mi` sur le port
-8090. Pour la même raison je n'ai pas mis de `docker image prune`, qui aurait
+arrivé plusieurs fois entre camarades. J'utilise donc un nom de conteneur `myapp-mi` qui
+n'appartient qu'a moi. Pour la même raison je n'ai pas mis de `docker image prune`, qui aurait
 supprimé les images des autres, et je ne fais pas de `docker login` sur la VM,
 qui laisserait mon token Docker Hub dans un fichier lisible par tout le monde.
 Mon image étant publique, le `docker pull` fonctionne sans authentification.

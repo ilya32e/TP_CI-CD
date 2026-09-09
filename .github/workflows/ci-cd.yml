@@ -23,7 +23,7 @@ env:
   # La VM Azure est partagee avec toute la promotion : un nom de conteneur
   # et un port qui nous sont propres evitent tout conflit avec les autres.
   CONTENEUR: myapp-mi
-  PORT_HOTE: "8090"
+  PORT_HOTE: "8080"
 
 jobs:
 
@@ -226,16 +226,17 @@ jobs:
             fi
 
             # Le port est-il tenu par le conteneur d'un autre etudiant ?
-            # Ce controle a lieu AVANT de supprimer le notre : sinon, en cas
-            # de conflit, on detruirait notre conteneur en service pour ensuite
+            # Ce controle a lieu AVANT de supprimer le notre : sinon, en cas de
+            # conflit, on detruirait notre conteneur en service pour ensuite
             # echouer a en demarrer un nouveau, et il ne resterait rien.
             echo "==> Verification que le port ${PORT_HOTE} est disponible"
-            OCCUPANT="$(docker ps --filter "publish=${PORT_HOTE}" --format '{{.Names}}' \
-              | grep -v -x "$CONTENEUR" || true)"
+            set +e
+            OCCUPANT="$(docker ps --filter "publish=${PORT_HOTE}" --format '{{.Names}}' | grep -v -x "$CONTENEUR")"
+            set -e
             if [ -n "$OCCUPANT" ]; then
-              echo "ECHEC : le port ${PORT_HOTE} est deja pris par le conteneur '${OCCUPANT}'," >&2
-              echo "qui appartient a un autre etudiant. Notre conteneur en service" >&2
-              echo "n'a pas ete touche. Choisissez un autre port via PORT_HOTE." >&2
+              echo "ECHEC : le port ${PORT_HOTE} est deja pris par '${OCCUPANT}'," >&2
+              echo "le conteneur d'un autre etudiant. Notre conteneur en service" >&2
+              echo "n'a pas ete touche, il continue de repondre." >&2
               exit 1
             fi
             echo "    port ${PORT_HOTE} libre"
@@ -280,22 +281,22 @@ jobs:
             # partagee, il effacerait les images des autres etudiants.
             # On se contente de retirer les anciennes versions de NOTRE image.
             echo "==> Suppression de nos propres anciennes versions d'image"
-            # Le "|| true" est indispensable : grep renvoie le code 1 quand il
-            # ne trouve aucune ligne, ce qui est le cas normal au premier
-            # deploiement (seuls TAG et latest existent). Sans lui, l'absence
-            # d'ancienne image ferait echouer tout le script a cause de
-            # "set -euo pipefail".
-            ANCIENS="$(docker images "${IMAGE_COMPLETE}" --format '{{.Tag}}' \
-              | grep -v -e "^${TAG}$" -e '^latest$' || true)"
+            # Le nettoyage est cosmetique : il libere du disque, mais il ne doit
+            # JAMAIS faire echouer un deploiement par ailleurs reussi. On coupe
+            # donc "set -e" le temps du nettoyage, et on evite tout pipeline ou
+            # substitution de commande susceptible de renvoyer un code non nul.
+            set +e
+            TAGS="$(docker images "${IMAGE_COMPLETE}" --format '{{.Tag}}' 2>/dev/null)"
+            for t in $TAGS; do
+              if [ "$t" != "$TAG" ] && [ "$t" != "latest" ]; then
+                echo "    suppression de ${IMAGE_COMPLETE}:${t}"
+                docker rmi "${IMAGE_COMPLETE}:${t}" >/dev/null 2>&1
+              fi
+            done
+            set -e
 
-            if [ -z "$ANCIENS" ]; then
-              echo "    aucune ancienne version a supprimer"
-            else
-              for ancien in $ANCIENS; do
-                echo "    suppression de ${IMAGE_COMPLETE}:${ancien}"
-                docker rmi "${IMAGE_COMPLETE}:${ancien}" || true
-              done
-            fi
+            echo "==> Deploiement termine avec succes"
+            exit 0
 
       # ----------------------------------------------------------------
       # Verification finale depuis l'exterieur (etape 6 de la chaine du TP)
