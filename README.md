@@ -1,255 +1,157 @@
-# TP CI/CD — Tests → Docker Hub → Déploiement sur VM Azure
+# TP CI/CD — Déploiement automatique sur une VM Azure
 
-Application web (API de tâches en Flask) déployée automatiquement sur une VM Azure
-à chaque push sur `main`. **Aucune action manuelle n'est nécessaire après le push.**
+Petite application web en Flask (une liste de tâches) qui se déploie toute seule
+sur une VM Azure à chaque push sur `main`. Une fois le push fait, il n'y a plus
+rien à toucher à la main.
 
-- Application en production : http://20.56.74.49
-- Healthcheck : http://20.56.74.49/health
-- Image Docker Hub : `VOTRE_UTILISATEUR_DOCKERHUB/tp-cicd-app`
+- Application : http://20.56.74.49:8090
+- Healthcheck : http://20.56.74.49:8090/health
+- Image Docker Hub : `ilya32e/tp-cicd-app`
 
----
+## L'application
 
-## 1. Fonctionnement du pipeline
+C'est volontairement simple, le sujet porte sur la chaîne CI/CD et pas sur
+l'application elle-même.
 
-Le workflow [`.github/workflows/ci-cd.yml`](.github/workflows/ci-cd.yml) enchaîne
-quatre jobs. Chacun ne démarre que si le précédent est vert (mot-clé `needs`) :
+| Route | Ce que ça fait |
+|---|---|
+| `GET /` | une page web qui liste les tâches |
+| `GET /health` | répond `{"status":"ok","version":"...","hote":"..."}` |
+| `GET /api/tasks` | la liste des tâches en JSON |
+| `POST /api/tasks` | ajoute une tâche, corps `{"titre":"..."}` |
+| `POST /api/tasks/<id>/done` | marque la tâche comme faite |
+| `DELETE /api/tasks/<id>` | supprime la tâche |
+
+Le code est séparé en deux : `app/store.py` contient la logique (ajouter,
+lister, terminer une tâche) sans rien connaître de Flask, et `app/main.py`
+contient les routes HTTP. Ça permet de tester la logique sans lancer de serveur.
+
+## Le pipeline
+
+Tout est dans `.github/workflows/ci-cd.yml`. Il y a 4 jobs, chacun ne démarre
+que si le précédent a réussi :
 
 ```
-git push (main)
-      │
-      ▼
-┌─────────────────────────┐
-│ 1. tests-unitaires      │  pytest tests/unit  — 30 tests
-└─────────────────────────┘
-      │ vert
-      ▼
-┌─────────────────────────┐
-│ 2. tests-e2e            │  build image → run conteneur → pytest tests/e2e — 8 tests
-└─────────────────────────┘
-      │ vert  (needs: [1, 2])
-      ▼
-┌─────────────────────────┐
-│ 3. build-et-push        │  docker build → push Docker Hub (tags :latest et :<sha>)
-└─────────────────────────┘
-      │ vert
-      ▼
-┌─────────────────────────┐
-│ 4. deploiement-azure    │  SSH → docker pull → docker run → vérifications
-└─────────────────────────┘
-      │
-      ▼
-  Application en ligne sur l'IP publique de la VM
+push sur main
+   → 1. tests unitaires   (pytest, 30 tests)
+   → 2. tests E2E         (on lance le conteneur et on tape dessus en HTTP, 8 tests)
+   → 3. build + push sur Docker Hub
+   → 4. déploiement SSH sur la VM Azure
 ```
 
-### Détail des jobs
+Le job 3 déclare `needs: [tests-unitaires, tests-e2e]`, donc si un seul test
+échoue, aucune image n'est publiée et le déploiement n'a jamais lieu.
 
-| # | Job | Ce qu'il fait | Échoue si… |
-|---|---|---|---|
-| 1 | `tests-unitaires` | installe les dépendances, lance `pytest tests/unit` | un test unitaire échoue |
-| 2 | `tests-e2e` | construit l'image, démarre le conteneur, lance `pytest tests/e2e` contre lui | l'app ne démarre pas ou un parcours échoue |
-| 3 | `build-et-push` | build puis push sur Docker Hub avec deux tags | identifiants Docker Hub invalides |
-| 4 | `deploiement-azure` | SSH sur la VM, pull, redémarrage du conteneur, vérifications | l'app ne répond pas ou la mauvaise version tourne |
+Sur la VM, le job 4 fait ça :
 
-Le job 3 déclare `needs: [tests-unitaires, tests-e2e]` : **aucune image n'est publiée
-si un seul test échoue**, et le déploiement n'a donc jamais lieu.
-
-### Les vérifications du job 4
-
-Le déploiement n'est pas considéré comme réussi tant que ces trois contrôles ne passent pas :
-
-1. **Depuis la VM** — boucle `curl http://localhost/health` (30 tentatives, 2 s d'intervalle).
-   En cas d'échec, les logs du conteneur sont affichés dans GitHub Actions.
-2. **Depuis l'extérieur** — le runner GitHub interroge `http://<IP_PUBLIQUE>/health`,
-   ce qui prouve que l'application est bien joignable depuis Internet et pas seulement
-   en local sur la VM.
-3. **Bonne version déployée** — `/health` renvoie le champ `version`, qui contient le SHA
-   du commit injecté au build. Le workflow le compare au commit en cours : si la VM
-   faisait encore tourner l'ancienne image, le job devient rouge.
-
-Enfin, **les 8 tests E2E sont rejoués contre la production**. Ce n'est pas seulement
-« le serveur répond », c'est « le parcours métier fonctionne réellement sur la VM ».
-
----
-
-## 2. Comment le déploiement est déclenché
-
-```yaml
-on:
-  push:
-    branches: [main]
-  workflow_dispatch:
+```bash
+docker pull ilya32e/tp-cicd-app:<sha>
+docker rm -f myapp-mi || true
+docker run -d --name myapp-mi --restart unless-stopped -p 8090:8080 ilya32e/tp-cicd-app:<sha>
 ```
 
-- **Automatique** : tout `git push` sur `main` lance la chaîne complète.
-- **Manuel** : le bouton *Run workflow* de l'onglet Actions rejoue le pipeline à
-  l'identique. C'est utile pour démontrer l'idempotence sans créer de commit.
+Ensuite il vérifie trois choses : que l'appli répond en local sur la VM, qu'elle
+répond depuis l'extérieur sur l'IP publique, et que la version renvoyée par
+`/health` correspond bien au commit qu'on vient de pousser. Pour finir, il rejoue
+les 8 tests E2E contre la VM. Si une seule de ces vérifications échoue, le job
+passe au rouge.
 
-Un `concurrency group` empêche deux déploiements simultanés sur la VM : si un second
-push arrive pendant un déploiement, il attend la fin du premier.
+## Comment le déploiement se déclenche
+
+Automatiquement, à chaque push sur `main`. J'ai aussi ajouté
+`workflow_dispatch`, qui ajoute un bouton « Run workflow » dans l'onglet
+Actions : ça permet de relancer le pipeline sans faire de commit, pratique pour
+montrer que le déploiement est idempotent.
 
 ### Idempotence
 
-Rejouer le workflow (ou repousser le même commit) ne crée jamais de second conteneur :
+Le conteneur a un nom fixe (`myapp-mi`), et on fait `docker rm -f` avant de le
+recréer. Relancer le workflow ne crée donc jamais un deuxième conteneur, ça
+remplace juste l'ancien. Le `|| true` évite que ça plante au tout premier
+déploiement, quand le conteneur n'existe pas encore.
+
+Vérifié en local en lançant la séquence trois fois de suite : il reste bien un
+seul conteneur.
+
+## Les secrets
+
+Rien n'est écrit en clair dans le dépôt, tout passe par les GitHub Secrets
+(Settings → Secrets and variables → Actions) :
+
+| Secret | Contenu |
+|---|---|
+| `DOCKERHUB_USERNAME` | mon login Docker Hub |
+| `DOCKERHUB_TOKEN` | un token Docker Hub (pas le mot de passe) |
+| `AZURE_VM_HOST` | l'IP publique de la VM |
+| `AZURE_VM_USER` | l'utilisateur SSH |
+| `SSH_PASSWORD` | le mot de passe SSH |
+
+## Choix techniques
+
+**Flask + pytest.** Je suis resté sur la même stack que les TP précédents. Les
+tests unitaires utilisent le `test_client()` de Flask : instantanés, et sans
+aucun accès réseau.
+
+**Tests E2E en HTTP plutôt que Cypress.** Le sujet laisse le choix entre HTTP et
+navigateur. En HTTP c'est plus rapide (pas besoin d'installer Node et Chrome sur
+le runner), et surtout les mêmes tests peuvent viser n'importe quelle URL grâce
+à la variable `E2E_BASE_URL`. C'est ce qui me permet de rejouer exactement la
+même suite contre le conteneur local, contre celui de la CI, puis contre la VM
+après le déploiement.
+
+**Les tests E2E m'ont trouvé un vrai bug.** Au départ le conteneur tournait avec
+gunicorn en `--workers 2`. Les tests E2E échouaient de façon aléatoire avec des
+404 : deux workers, c'est deux processus, donc deux stockages en mémoire
+différents — une tâche créée par l'un était invisible pour l'autre. Les 30 tests
+unitaires ne pouvaient pas voir ça, ils ne lancent pas de vrai serveur. C'est
+pour moi le meilleur argument en faveur des tests E2E.
+
+**Un nom de conteneur et un port qui me sont propres.** La VM est partagée avec
+toute la promo, sous un seul compte `ubuntu`. Si j'appelle mon conteneur `myapp`
+comme le suggère le sujet, je casse celui du voisin et il casse le mien — c'est
+arrivé plusieurs fois entre camarades. J'utilise donc `myapp-mi` sur le port
+8090. Pour la même raison je n'ai pas mis de `docker image prune`, qui aurait
+supprimé les images des autres, et je ne fais pas de `docker login` sur la VM,
+qui laisserait mon token Docker Hub dans un fichier lisible par tout le monde.
+Mon image étant publique, le `docker pull` fonctionne sans authentification.
+
+**Deux tags par image : `latest` et le SHA du commit.** Le tag SHA permet de
+savoir exactement quel commit tourne sur la VM, et de revenir en arrière si
+besoin. Ce SHA est aussi injecté dans l'image au build (`ARG APP_VERSION`) puis
+renvoyé par `/health`, ce qui me sert à vérifier automatiquement après le
+déploiement que la VM fait bien tourner la nouvelle version et pas l'ancienne.
+
+**Le Dockerfile.** Image `python:3.12-slim`, l'application tourne sous un
+utilisateur non-root, et les dépendances sont installées avant la copie du code
+pour profiter du cache Docker. Le conteneur démarre avec `python -m app.main`
+(la forme `-m` est nécessaire parce que `main.py` importe `app.store`).
+
+## Lancer en local
 
 ```bash
-docker rm -f myapp || true     # supprime l'ancien s'il existe
-docker run -d --name myapp ... # recrée toujours le même nom
-```
-
-Le nom de conteneur est **fixe** (`myapp`). Le `|| true` évite l'échec au tout premier
-déploiement, quand `myapp` n'existe pas encore. Vérifié en local : trois déploiements
-consécutifs laissent bien **un seul** conteneur.
-
-`--restart unless-stopped` garantit en plus que l'application redémarre toute seule
-si la VM Azure reboote.
-
----
-
-## 3. Application
-
-| Route | Méthode | Rôle |
-|---|---|---|
-| `/` | GET | page web listant les tâches |
-| `/health` | GET | healthcheck : `{"status":"ok","version":"<sha>","hote":"<conteneur>"}` |
-| `/api/tasks` | GET | liste des tâches |
-| `/api/tasks` | POST | création — corps `{"titre":"..."}` |
-| `/api/tasks/<id>` | GET | détail d'une tâche |
-| `/api/tasks/<id>/done` | POST | marque la tâche comme faite |
-| `/api/tasks/<id>` | DELETE | suppression |
-
----
-
-## 4. Utilisation en local
-
-```bash
-# Installation
 python -m venv .venv
-.venv\Scripts\activate            # Windows  (source .venv/bin/activate sous Linux)
+.venv\Scripts\activate
 pip install -r requirements-dev.txt
 
-# Tests unitaires (30 tests, aucun conteneur requis)
-pytest
+pytest                      # les 30 tests unitaires
+./scripts/run-e2e.sh 8080   # build + conteneur + tests E2E + nettoyage
 
-# Tests E2E en une commande : build + run + tests + nettoyage
-./scripts/run-e2e.sh 8080
-
-# Lancer l'application dans Docker
-docker build -t tp-cicd-app:local .
-docker run -d --name myapp -p 8080:8080 tp-cicd-app:local
+docker build -t tp-cicd-app .
+docker run -d --name myapp -p 8080:8080 tp-cicd-app
 curl http://localhost:8080/health
 ```
 
----
-
-## 5. Secrets GitHub (obligatoires)
-
-Aucun identifiant n'apparaît en clair dans le dépôt. À créer dans
-**Settings → Secrets and variables → Actions → New repository secret** :
-
-| Secret | Contenu | Où l'obtenir |
-|---|---|---|
-| `DOCKERHUB_USERNAME` | votre login Docker Hub | hub.docker.com |
-| `DOCKERHUB_TOKEN` | jeton d'accès (**pas** le mot de passe) | Docker Hub → Account Settings → Personal access tokens → *Read & Write* |
-| `AZURE_VM_HOST` | `20.56.74.49` | portail Azure → VM → Overview |
-| `AZURE_VM_USER` | `ubuntu` | choisi à la création de la VM |
-| `SSH_PASSWORD` | mot de passe SSH de l'utilisateur | choisi à la création de la VM |
-
-> L'authentification se fait par mot de passe. Le serveur SSH de la VM doit donc
-> accepter `PasswordAuthentication yes` (c'est le cas par defaut sur cette VM).
-
-Dans le script SSH, les secrets sont transmis par `envs:` plutôt qu'interpolés dans
-le corps du script : ils ne peuvent donc pas se retrouver écrits en clair dans les
-journaux d'exécution.
-
----
-
-## 6. Préparation de la VM Azure (une seule fois)
-
-```bash
-ssh ubuntu@<IP_PUBLIQUE>     # mot de passe demande
-bash scripts/setup-vm.sh    # installe Docker et ajoute l'utilisateur au groupe docker
-exit                        # obligatoire : reconnexion pour appliquer le groupe
-```
-
-Puis, sur le **portail Azure** → VM → *Networking* → *Add inbound port rule* :
-autoriser le **port 80 (TCP)** depuis `Any`. Sans cette règle, la VM répond en local
-mais reste injoignable depuis Internet.
-
-Le script est idempotent : le relancer sur une VM déjà configurée ne casse rien.
-
----
-
-## 7. Choix techniques
-
-**Python / Flask.** Application volontairement simple : le sujet porte sur la chaîne
-CI/CD, pas sur la complexité applicative. La logique métier est isolée dans
-[`app/store.py`](app/store.py), sans dépendance à Flask, ce qui la rend testable
-unitairement sans démarrer de serveur.
-
-**Tests E2E en HTTP (pytest + requests) plutôt que Cypress.** Le sujet autorise
-« HTTP ou navigateur ». L'approche HTTP évite d'installer Node et Chrome sur le runner
-(pipeline plus rapide), et surtout **la même suite de tests peut cibler n'importe quelle
-URL** via la variable `E2E_BASE_URL` : le conteneur local, celui de la CI, ou la VM Azure
-en production. C'est ce qui permet de rejouer les E2E contre la production après le
-déploiement.
-
-**Serveur intégré de Flask, en un seul processus.** Le conteneur démarre avec
-`python -m app.main`, comme le Dockerfile d'exemple du cours (`MiniProjetDocker`).
-Une version intermédiaire utilisait gunicorn avec `--workers 2`, et **les tests E2E
-ont révélé un bug que les 30 tests unitaires ne pouvaient pas voir** : deux workers
-sont deux processus séparés, donc deux `TaskStore` en mémoire distincts. Une tâche
-créée par le worker A renvoyait un 404 quand la requête suivante tombait sur le
-worker B. *C'est l'illustration concrète de l'intérêt des tests E2E en plus des
-tests unitaires.* La règle qui en découle vaut pour le serveur actuel : le stockage
-étant en mémoire, l'application doit tourner en **un seul processus**. Le serveur
-Flask est multi-threadé, et le `Lock` de `TaskStore` rend le stockage sûr entre
-threads — la configuration est donc correcte.
-
-`python -m app.main` et non `python app/main.py` : le module importe `app.store`,
-ce qui exige que le paquet `app` soit sur le `sys.path`.
-
-**Double tag d'image (`latest` + `<sha-court>`).** Le tag SHA rend chaque image
-traçable jusqu'au commit exact qui l'a produite, et permet de revenir à une version
-antérieure en cas de problème. `latest` reste pratique à lire.
-
-**`APP_VERSION` injecté au build et exposé par `/health`.** C'est ce qui permet de
-vérifier automatiquement, après le déploiement, que la VM fait bien tourner la nouvelle
-image — un déploiement « silencieusement raté » est ainsi détecté.
-
-**Conteneur non-root, `HEALTHCHECK` Docker, `.dockerignore`.** L'application tourne
-sous l'utilisateur `appuser` ; `docker ps` affiche `healthy` ou `unhealthy`, ce qui aide
-au diagnostic sur la VM ; le `.dockerignore` exclut `.venv/`, `tests/` et `.git/` pour
-une image plus légère (198 Mo) et un build plus rapide.
-
-**`.gitattributes` avec `eol=lf`.** Le développement se fait sous Windows, la CI et la
-VM sous Linux. Sans cette règle, Git convertirait les scripts `.sh` en CRLF et Linux
-répondrait `bad interpreter: /usr/bin/env bash^M`.
-
----
-
-## 8. Structure du dépôt
+## Structure du dépôt
 
 ```
-.
-├── app/
-│   ├── store.py              logique métier (testable sans Flask)
-│   ├── main.py               application Flask et routes
-│   └── templates/index.html  page web
-├── tests/
-│   ├── unit/                 30 tests unitaires
-│   └── e2e/                  8 tests E2E (HTTP)
-├── scripts/
-│   ├── healthcheck.sh        attente + vérification de /health
-│   ├── run-e2e.sh            tests E2E en une seule commande
-│   └── setup-vm.sh           préparation de la VM Azure (une fois)
-├── .github/workflows/ci-cd.yml
-├── Dockerfile
-├── docker-compose.yml
-└── requirements.txt / requirements-dev.txt
+app/            l'application (store.py = logique, main.py = routes)
+tests/unit/     30 tests unitaires
+tests/e2e/      8 tests E2E
+scripts/        healthcheck, lancement des E2E, préparation de la VM
+.github/workflows/ci-cd.yml
+Dockerfile
 ```
 
----
+## Capture d'écran
 
-## 9. Capture d'écran
-
-![Application accessible sur l'IP publique de la VM Azure](docs/capture-vm-azure.png)
+![Application sur l'IP publique de la VM Azure](docs/capture-vm-azure.png)
