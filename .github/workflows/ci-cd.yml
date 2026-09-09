@@ -342,6 +342,15 @@ jobs:
         continue-on-error: true
         run: bash scripts/diagnostic-ports.sh "${{ secrets.AZURE_VM_HOST }}"
 
+      - name: Diagnostic - cartographie complete du NSG
+        # Balaye les ports reserves et les plages web habituelles, en
+        # distinguant "bloque par le NSG" (delai depasse) de "autorise mais
+        # rien n'ecoute" (connexion refusee). C'est ce qui permet de savoir
+        # s'il existe un port utilisable, sans avoir a y deployer quoi que ce soit.
+        if: always()
+        continue-on-error: true
+        run: python scripts/diagnostic-nsg.py "${{ secrets.AZURE_VM_HOST }}"
+
       - name: Verification que la VM fait tourner le nouveau commit
         # /health renvoie APP_VERSION, injecte au build. Si la version publiee
         # ne correspond pas au commit, c'est que l'ancienne image tourne encore.
