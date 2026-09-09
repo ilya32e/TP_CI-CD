@@ -265,12 +265,22 @@ jobs:
             # partagee, il effacerait les images des autres etudiants.
             # On se contente de retirer les anciennes versions de NOTRE image.
             echo "==> Suppression de nos propres anciennes versions d'image"
-            docker images "${IMAGE_COMPLETE}" --format '{{.Tag}}' \
-              | grep -v -e "^${TAG}$" -e '^latest$' \
-              | while read -r ancien; do
-                  echo "    suppression de ${IMAGE_COMPLETE}:${ancien}"
-                  docker rmi "${IMAGE_COMPLETE}:${ancien}" || true
-                done
+            # Le "|| true" est indispensable : grep renvoie le code 1 quand il
+            # ne trouve aucune ligne, ce qui est le cas normal au premier
+            # deploiement (seuls TAG et latest existent). Sans lui, l'absence
+            # d'ancienne image ferait echouer tout le script a cause de
+            # "set -euo pipefail".
+            ANCIENS="$(docker images "${IMAGE_COMPLETE}" --format '{{.Tag}}' \
+              | grep -v -e "^${TAG}$" -e '^latest$' || true)"
+
+            if [ -z "$ANCIENS" ]; then
+              echo "    aucune ancienne version a supprimer"
+            else
+              for ancien in $ANCIENS; do
+                echo "    suppression de ${IMAGE_COMPLETE}:${ancien}"
+                docker rmi "${IMAGE_COMPLETE}:${ancien}" || true
+              done
+            fi
 
       # ----------------------------------------------------------------
       # Verification finale depuis l'exterieur (etape 6 de la chaine du TP)
