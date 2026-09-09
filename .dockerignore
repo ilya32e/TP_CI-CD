@@ -1,0 +1,14 @@
+.git/
+.github/
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+tests/
+docs/
+*.md
+.gitignore
+requirements-dev.txt
+pytest.ini
+docker-compose.yml

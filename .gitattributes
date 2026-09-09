@@ -1,0 +1,7 @@
+# Vous developpez sous Windows mais la CI et la VM Azure tournent sous Linux.
+# Sans cette regle, Git convertirait les scripts en fins de ligne CRLF et
+# Linux repondrait "bad interpreter: /usr/bin/env bash^M".
+* text=auto eol=lf
+*.sh text eol=lf
+Dockerfile text eol=lf
+*.yml text eol=lf

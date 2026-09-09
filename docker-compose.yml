@@ -1,0 +1,22 @@
+# Usage local / VM : "docker compose up -d --build"
+# Le nom de conteneur est fixe : relancer la commande met a jour
+# le meme conteneur au lieu d'en empiler plusieurs (idempotence).
+services:
+  app:
+    build:
+      context: .
+      args:
+        APP_VERSION: ${APP_VERSION:-local}
+    image: ${IMAGE:-tp-cicd-app:local}
+    container_name: myapp
+    restart: unless-stopped
+    ports:
+      - "${HOST_PORT:-8080}:8080"
+    environment:
+      PORT: 8080
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0) if urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=2).status == 200 else sys.exit(1)"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s

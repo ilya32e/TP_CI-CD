@@ -1,0 +1,266 @@
+name: CI/CD - Tests, Docker Hub et deploiement Azure
+
+# Declencheur exige par le TP : tout push sur main lance la chaine complete.
+# workflow_dispatch permet de rejouer le pipeline a l'identique depuis
+# l'interface GitHub, ce qui sert a demontrer l'idempotence du deploiement.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Deux pushes rapproches ne doivent pas deployer en meme temps sur la VM :
+# le plus recent attend que le precedent soit termine.
+concurrency:
+  group: deploiement-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  IMAGE_NAME: tp-cicd-app
+  PYTHON_VERSION: "3.12"
+
+jobs:
+
+  # ------------------------------------------------------------------
+  # JOB 1 - Tests unitaires
+  # ------------------------------------------------------------------
+  tests-unitaires:
+    name: 1. Tests unitaires
+    runs-on: ubuntu-latest
+    steps:
+      - name: Recuperation du code
+        uses: actions/checkout@v4
+
+      - name: Installation de Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Installation des dependances
+        run: pip install -r requirements-dev.txt
+
+      - name: Execution des tests unitaires
+        # Si un seul test echoue, pytest renvoie un code de sortie non nul :
+        # le job devient rouge et tous les jobs suivants sont annules.
+        run: pytest tests/unit -v
+
+  # ------------------------------------------------------------------
+  # JOB 2 - Tests E2E (contre un vrai conteneur Docker)
+  # ------------------------------------------------------------------
+  tests-e2e:
+    name: 2. Tests E2E
+    runs-on: ubuntu-latest
+    needs: tests-unitaires
+    steps:
+      - name: Recuperation du code
+        uses: actions/checkout@v4
+
+      - name: Installation de Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Installation des dependances
+        run: pip install -r requirements-dev.txt
+
+      - name: Construction de l'image de test
+        run: docker build --build-arg APP_VERSION=e2e-${{ github.sha }} -t ${{ env.IMAGE_NAME }}:e2e .
+
+      - name: Demarrage du conteneur
+        run: docker run -d --name myapp-e2e -p 8080:8080 ${{ env.IMAGE_NAME }}:e2e
+
+      - name: Attente de la disponibilite
+        run: bash scripts/healthcheck.sh http://localhost:8080 30 2
+
+      - name: Execution des tests E2E
+        env:
+          E2E_BASE_URL: http://localhost:8080
+        run: pytest tests/e2e -v
+
+      - name: Journaux du conteneur (meme en cas d'echec)
+        if: always()
+        run: docker logs myapp-e2e || true
+
+      - name: Nettoyage
+        if: always()
+        run: docker rm -f myapp-e2e || true
+
+  # ------------------------------------------------------------------
+  # JOB 3 - Build et publication sur Docker Hub
+  # Ne demarre QUE si les jobs 1 et 2 sont verts (mot-cle "needs").
+  # ------------------------------------------------------------------
+  build-et-push:
+    name: 3. Build et push Docker Hub
+    runs-on: ubuntu-latest
+    needs: [tests-unitaires, tests-e2e]
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - name: Recuperation du code
+        uses: actions/checkout@v4
+
+      - name: Calcul du tag de version
+        id: version
+        # Tag immuable base sur le SHA court du commit : chaque image publiee
+        # est tracable jusqu'au commit exact qui l'a produite.
+        run: echo "tag=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Configuration de Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Connexion a Docker Hub
+        # Les identifiants viennent des GitHub Secrets : rien en clair dans le depot.
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build et push de l'image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          # Deux tags : "latest" pour la lisibilite, le SHA pour la tracabilite
+          # et pour pouvoir revenir en arriere sur une version precise.
+          tags: |
+            ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}:latest
+            ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.tag }}
+          build-args: |
+            APP_VERSION=${{ steps.version.outputs.tag }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ------------------------------------------------------------------
+  # JOB 4 - Deploiement sur la VM Azure via SSH
+  # ------------------------------------------------------------------
+  deploiement-azure:
+    name: 4. Deploiement sur la VM Azure
+    runs-on: ubuntu-latest
+    needs: build-et-push
+    steps:
+      - name: Recuperation du code
+        uses: actions/checkout@v4
+
+      - name: Installation de Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Installation des dependances de test
+        run: pip install -r requirements-dev.txt
+
+      - name: Deploiement sur la VM via SSH
+        uses: appleboy/ssh-action@v1.2.0
+        env:
+          IMAGE_COMPLETE: ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}
+          TAG: ${{ needs.build-et-push.outputs.tag }}
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        with:
+          host: ${{ secrets.AZURE_VM_HOST }}
+          username: ${{ secrets.AZURE_VM_USER }}
+          key: ${{ secrets.AZURE_SSH_PRIVATE_KEY }}
+          port: 22
+          # Les valeurs sensibles sont transmises en variables d'environnement
+          # plutot qu'ecrites dans le script : elles n'apparaissent pas en clair.
+          envs: IMAGE_COMPLETE,TAG,DOCKERHUB_USERNAME,DOCKERHUB_TOKEN
+          script_stop: true
+          script: |
+            set -euo pipefail
+
+            echo "==> Connexion a Docker Hub"
+            echo "$DOCKERHUB_TOKEN" | docker login -u "$DOCKERHUB_USERNAME" --password-stdin
+
+            echo "==> Recuperation de l'image ${IMAGE_COMPLETE}:${TAG}"
+            docker pull "${IMAGE_COMPLETE}:${TAG}"
+
+            # --- IDEMPOTENCE ---
+            # Le conteneur porte un nom FIXE (myapp). On supprime l'ancien avant
+            # de recreer le nouveau : rejouer ce workflow ne peut donc jamais
+            # empiler plusieurs conteneurs. Le "|| true" evite l'echec au tout
+            # premier deploiement, quand myapp n'existe pas encore.
+            echo "==> Arret de l'ancien conteneur (s'il existe)"
+            docker rm -f myapp || true
+
+            echo "==> Demarrage du nouveau conteneur"
+            # --restart unless-stopped : l'application redemarre toute seule
+            # si la VM Azure reboote.
+            docker run -d \
+              --name myapp \
+              --restart unless-stopped \
+              -p 80:8080 \
+              -e PORT=8080 \
+              "${IMAGE_COMPLETE}:${TAG}"
+
+            echo "==> Verification locale sur la VM"
+            for i in $(seq 1 30); do
+              if curl -fsS --max-time 5 http://localhost/health; then
+                echo ""
+                echo "==> Application demarree apres ${i} tentative(s)"
+                break
+              fi
+              if [ "$i" -eq 30 ]; then
+                echo "ECHEC : l'application n'a pas demarre" >&2
+                docker logs myapp >&2
+                exit 1
+              fi
+              sleep 2
+            done
+
+            echo "==> Etat du conteneur"
+            docker ps --filter name=myapp
+
+            echo "==> Nettoyage des images obsoletes"
+            docker image prune -af --filter "until=168h" || true
+
+            echo "==> Deconnexion de Docker Hub"
+            docker logout || true
+
+      # ----------------------------------------------------------------
+      # Verification finale depuis l'exterieur (etape 6 de la chaine du TP)
+      # ----------------------------------------------------------------
+      - name: Verification via l'IP publique
+        run: bash scripts/healthcheck.sh "http://${{ secrets.AZURE_VM_HOST }}" 15 4
+
+      - name: Verification que la VM fait tourner le nouveau commit
+        # /health renvoie APP_VERSION, injecte au build. Si la version publiee
+        # ne correspond pas au commit, c'est que l'ancienne image tourne
+        # encore : le deploiement est alors declare en echec.
+        env:
+          ATTENDU: ${{ needs.build-et-push.outputs.tag }}
+          URL_SANTE: http://${{ secrets.AZURE_VM_HOST }}/health
+        run: |
+          OBTENU=$(curl -fsS "$URL_SANTE" | python -c "import json,sys; print(json.load(sys.stdin)['version'])")
+          echo "version attendue : $ATTENDU"
+          echo "version deployee : $OBTENU"
+          test "$ATTENDU" = "$OBTENU"
+
+      - name: Tests E2E contre la production
+        # On rejoue exactement la meme suite E2E que le job 2, mais cette fois
+        # contre la VM Azure : la preuve que le service deploye fonctionne
+        # vraiment, et pas seulement qu'il repond.
+        env:
+          E2E_BASE_URL: http://${{ secrets.AZURE_VM_HOST }}
+        run: pytest tests/e2e -v
+
+      - name: Recapitulatif
+        if: always()
+        env:
+          HOTE: ${{ secrets.AZURE_VM_HOST }}
+          TAG: ${{ needs.build-et-push.outputs.tag }}
+        run: |
+          {
+            echo "### Deploiement termine"
+            echo ""
+            echo "| Element | Valeur |"
+            echo "|---|---|"
+            echo "| Commit | ${{ github.sha }} |"
+            echo "| Tag de l image | $TAG |"
+            echo "| Application | http://$HOTE |"
+            echo "| Healthcheck | http://$HOTE/health |"
+          } >> "$GITHUB_STEP_SUMMARY"
