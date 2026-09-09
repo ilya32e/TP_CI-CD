@@ -164,9 +164,10 @@ jobs:
         with:
           host: ${{ secrets.AZURE_VM_HOST }}
           username: ${{ secrets.AZURE_VM_USER }}
-          # Authentification par mot de passe, stocke dans un GitHub Secret.
-          # Il n'apparait donc jamais en clair dans le depot ni dans les logs.
-          password: ${{ secrets.SSH_PASSWORD }}
+          # Authentification par cle privee (exigence de la section 8 du sujet).
+          # La cle est stockee dans un GitHub Secret : elle n'apparait jamais
+          # en clair dans le depot ni dans les journaux d'execution.
+          key: ${{ secrets.AZURE_SSH_PRIVATE_KEY }}
           port: 22
           # Les valeurs sensibles sont transmises en variables d'environnement
           # plutot qu'ecrites dans le script : elles n'apparaissent pas en clair.
