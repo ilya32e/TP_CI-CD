@@ -3,8 +3,8 @@
 Application web (API de tâches en Flask) déployée automatiquement sur une VM Azure
 à chaque push sur `main`. **Aucune action manuelle n'est nécessaire après le push.**
 
-- Application en production : http://VOTRE_IP_PUBLIQUE
-- Healthcheck : http://VOTRE_IP_PUBLIQUE/health
+- Application en production : http://20.56.74.49
+- Healthcheck : http://20.56.74.49/health
 - Image Docker Hub : `VOTRE_UTILISATEUR_DOCKERHUB/tp-cicd-app`
 
 ---
@@ -150,13 +150,12 @@ Aucun identifiant n'apparaît en clair dans le dépôt. À créer dans
 |---|---|---|
 | `DOCKERHUB_USERNAME` | votre login Docker Hub | hub.docker.com |
 | `DOCKERHUB_TOKEN` | jeton d'accès (**pas** le mot de passe) | Docker Hub → Account Settings → Personal access tokens → *Read & Write* |
-| `AZURE_VM_HOST` | IP publique de la VM | portail Azure → VM → Overview |
-| `AZURE_VM_USER` | `azureuser` | choisi à la création de la VM |
-| `AZURE_SSH_PRIVATE_KEY` | clé privée SSH **complète** | fichier `.pem` téléchargé à la création de la VM |
+| `AZURE_VM_HOST` | `20.56.74.49` | portail Azure → VM → Overview |
+| `AZURE_VM_USER` | `ubuntu` | choisi à la création de la VM |
+| `SSH_PASSWORD` | mot de passe SSH de l'utilisateur | choisi à la création de la VM |
 
-> Pour `AZURE_SSH_PRIVATE_KEY`, collez le contenu entier du fichier `.pem`, en
-> incluant les lignes `-----BEGIN ... PRIVATE KEY-----` et `-----END ... PRIVATE
-> KEY-----`, ainsi que le saut de ligne final.
+> L'authentification se fait par mot de passe. Le serveur SSH de la VM doit donc
+> accepter `PasswordAuthentication yes` (c'est le cas par defaut sur cette VM).
 
 Dans le script SSH, les secrets sont transmis par `envs:` plutôt qu'interpolés dans
 le corps du script : ils ne peuvent donc pas se retrouver écrits en clair dans les
@@ -167,13 +166,10 @@ journaux d'exécution.
 ## 6. Préparation de la VM Azure (une seule fois)
 
 ```bash
-ssh -i ~/.ssh/cle-tp-cicd.pem azureuser@<IP_PUBLIQUE>
+ssh ubuntu@<IP_PUBLIQUE>     # mot de passe demande
 bash scripts/setup-vm.sh    # installe Docker et ajoute l'utilisateur au groupe docker
 exit                        # obligatoire : reconnexion pour appliquer le groupe
 ```
-
-La procédure complète de création de la VM sur un compte **Azure for Students**
-est détaillée dans [`docs/AZURE-VM.md`](docs/AZURE-VM.md).
 
 Puis, sur le **portail Azure** → VM → *Networking* → *Add inbound port rule* :
 autoriser le **port 80 (TCP)** depuis `Any`. Sans cette règle, la VM répond en local
