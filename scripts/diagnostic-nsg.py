@@ -20,8 +20,8 @@ import socket
 import sys
 from concurrent.futures import ThreadPoolExecutor
 
-DELAI = 4
-PARALLELISME = 150
+DELAI = 2
+PARALLELISME = 200
 
 
 def ports_a_tester():

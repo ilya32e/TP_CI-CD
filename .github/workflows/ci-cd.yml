@@ -335,13 +335,6 @@ jobs:
             exit 1
           fi
 
-      - name: Diagnostic - ports joignables depuis Internet
-        # Le runner GitHub a un acces reseau direct : son verdict fait autorite
-        # sur ce que le NSG publie reellement.
-        if: always()
-        continue-on-error: true
-        run: bash scripts/diagnostic-ports.sh "${{ secrets.AZURE_VM_HOST }}"
-
       - name: Diagnostic - cartographie complete du NSG
         # Balaye les ports reserves et les plages web habituelles, en
         # distinguant "bloque par le NSG" (delai depasse) de "autorise mais
@@ -372,6 +365,10 @@ jobs:
         continue-on-error: true
         env:
           E2E_BASE_URL: http://${{ secrets.AZURE_VM_HOST }}
+          # Delais courts : tant que le NSG bloque, ces tests ne peuvent pas
+          # aboutir. Inutile d'attendre deux minutes de timeouts a chaque run.
+          E2E_RETRIES: "2"
+          E2E_TIMEOUT: "5"
         run: pytest tests/e2e -v
 
       - name: Recapitulatif
